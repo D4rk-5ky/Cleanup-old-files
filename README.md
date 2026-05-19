@@ -33,11 +33,51 @@ Recommended before real use:
 - Deletes the **oldest files first**
 - Works recursively through subfolders
 - Can clean based on mount usage percentage
+- Can clean based on mount used size
 - Can clean based on folder size
-- Can use both limits at the same time
+- Can use multiple limits at the same time
+- Cleans when **any configured limit** is exceeded
 - Stops after a configured maximum number of deleted files
 - Uses a lock file to avoid multiple copies running at once
-- Intended for cron/systemd timer usage
+- Intended for cron or systemd timer usage
+- Requires only Python 3 and the standard library
+
+---
+
+## Important Safety Behavior
+
+The script separates:
+
+1. **What triggers cleanup**
+2. **Where files are deleted from**
+
+If `--folder` is supplied, files are deleted only from that folder.
+
+If `--folder` is not supplied, files are deleted from `--mount`.
+
+Example:
+
+```bash
+/usr/bin/python3 delete_oldest_files_cleanup.py \
+  --mount /storage \
+  --max-mount-usage 90 \
+  --max-mount-size 500G \
+  --folder /storage/cctv \
+  --max-folder-size 500G \
+  --max-cycles 10
+```
+
+This checks:
+
+- `/storage` usage percentage
+- `/storage` used size
+- `/storage/cctv` folder size
+
+But it deletes files only from:
+
+```text
+/storage/cctv
+```
 
 ---
 
@@ -48,15 +88,15 @@ The script checks whether cleanup is needed.
 Cleanup can be triggered by:
 
 1. A mount point being over a usage percentage
-2. A folder being over a maximum size
-3. Either of the above when both are configured
+2. A mount point/filesystem having more used space than allowed
+3. A folder being over a maximum size
+4. Any combination of the above
 
 When cleanup is needed, the script scans the cleanup folder and deletes the single oldest file it can find.
 
 It then checks the limits again and repeats until:
 
-- The mount usage is below the configured limit
-- The folder size is below the configured limit
+- All configured limits are OK
 - The maximum delete cycle count is reached
 - No deletable files are found
 - An error occurs
@@ -80,9 +120,9 @@ It does **not** use:
 Example:
 
 ```text
-/storage/camera1/newer-file.mp4
-/storage/camera2/oldest-file.mp4
-/storage/camera3/archive/second-oldest-file.mp4
+/storage/cctv/camera1/newer-file.mp4
+/storage/cctv/camera2/oldest-file.mp4
+/storage/cctv/camera3/archive/second-oldest-file.mp4
 ```
 
 If `oldest-file.mp4` has the oldest modification time, it will be deleted first, even though it is in another folder.
@@ -105,13 +145,13 @@ No external Python packages are required.
 Save the script somewhere sensible, for example:
 
 ```bash
-sudo nano /home/cfna08h/Scripts/CleanUp/delete_oldest_files_cleanup.py
+sudo nano /usr/local/sbin/delete_oldest_files_cleanup.py
 ```
 
 Make it executable:
 
 ```bash
-chmod +x /home/cfna08h/Scripts/CleanUp/delete_oldest_files_cleanup.py
+sudo chmod +x /usr/local/sbin/delete_oldest_files_cleanup.py
 ```
 
 ---
@@ -119,7 +159,7 @@ chmod +x /home/cfna08h/Scripts/CleanUp/delete_oldest_files_cleanup.py
 ## Usage
 
 ```bash
-./delete_oldest_files_cleanup.py [options]
+delete_oldest_files_cleanup.py [options]
 ```
 
 ---
@@ -128,23 +168,55 @@ chmod +x /home/cfna08h/Scripts/CleanUp/delete_oldest_files_cleanup.py
 
 | Option | Description |
 |---|---|
-| `--mount` | Mount point to check for disk usage percentage |
-| `--max-mount-usage` | Maximum allowed mount usage percentage |
+| `--mount` | Mount point/filesystem to check, for example `/storage` |
+| `--max-mount-usage` | Maximum allowed mount usage percentage, for example `90` |
+| `--max-mount-size` | Maximum allowed used size on the mount/filesystem, for example `500G` |
 | `--folder` | Folder to scan for oldest files and optionally check size |
-| `--max-folder-size` | Maximum allowed folder size |
+| `--max-folder-size` | Maximum allowed folder size, for example `500G` |
 | `--max-cycles` | Maximum number of files to delete in one run |
+
+At least one cleanup limit is required:
+
+- `--max-mount-usage`
+- `--max-mount-size`
+- `--max-folder-size`
 
 ---
 
-## Example: Clean by Mount Usage
+## Example: Clean by Mount Usage Percentage
 
 Delete oldest files under `/storage` until `/storage` is at or below `90%` usage.
 
 ```bash
-/usr/bin/python3 /home/cfna08h/Scripts/CleanUp/delete_oldest_files_cleanup.py \
+/usr/bin/python3 /usr/local/sbin/delete_oldest_files_cleanup.py \
   --mount /storage \
   --max-mount-usage 90 \
-  --max-cycles 10
+  --max-cycles 1000
+```
+
+Because no `--folder` is supplied, files are deleted from:
+
+```text
+/storage
+```
+
+---
+
+## Example: Clean by Mount Used Size
+
+Delete oldest files under `/storage` until the filesystem containing `/storage` has used at most `500G`.
+
+```bash
+/usr/bin/python3 /usr/local/sbin/delete_oldest_files_cleanup.py \
+  --mount /storage \
+  --max-mount-size 500G \
+  --max-cycles 1000
+```
+
+Because no `--folder` is supplied, files are deleted from:
+
+```text
+/storage
 ```
 
 ---
@@ -154,10 +226,16 @@ Delete oldest files under `/storage` until `/storage` is at or below `90%` usage
 Delete oldest files under `/storage/cctv` until that folder is at or below `500G`.
 
 ```bash
-/usr/bin/python3 /home/cfna08h/Scripts/CleanUp/delete_oldest_files_cleanup.py \
+/usr/bin/python3 /usr/local/sbin/delete_oldest_files_cleanup.py \
   --folder /storage/cctv \
   --max-folder-size 500G \
-  --max-cycles 10
+  --max-cycles 1000
+```
+
+Files are deleted from:
+
+```text
+/storage/cctv
 ```
 
 ---
@@ -170,15 +248,15 @@ Delete oldest files under `/storage/cctv` if either:
 - `/storage/cctv` is above `500G`
 
 ```bash
-/usr/bin/python3 /home/cfna08h/Scripts/CleanUp/delete_oldest_files_cleanup.py \
+/usr/bin/python3 /usr/local/sbin/delete_oldest_files_cleanup.py \
   --mount /storage \
   --max-mount-usage 90 \
   --folder /storage/cctv \
   --max-folder-size 500G \
-  --max-cycles 10
+  --max-cycles 1000
 ```
 
-In this mode, files are deleted from:
+Files are deleted from:
 
 ```text
 /storage/cctv
@@ -188,7 +266,35 @@ Not from the whole mount.
 
 ---
 
-## Supported Folder Size Formats
+## Example: Use All Limits Together
+
+Delete oldest files under `/storage/cctv` when **any** configured limit is exceeded:
+
+- `/storage` is above `90%`
+- `/storage` has more than `500G` used
+- `/storage/cctv` is larger than `500G`
+
+```bash
+/usr/bin/python3 /usr/local/sbin/delete_oldest_files_cleanup.py \
+  --mount /storage \
+  --max-mount-usage 90 \
+  --max-mount-size 500G \
+  --folder /storage/cctv \
+  --max-folder-size 500G \
+  --max-cycles 10
+```
+
+This deletes at most:
+
+```text
+10 files per script run
+```
+
+It does **not** delete 10 files at once. It deletes one oldest file, checks the limits again, then continues if cleanup is still needed.
+
+---
+
+## Supported Size Formats
 
 Examples:
 
@@ -224,7 +330,7 @@ crontab -e
 Add:
 
 ```cron
-*/10 * * * * /usr/bin/python3 /home/cfna08h/Scripts/CleanUp/delete_oldest_files_cleanup.py --mount /storage --max-mount-usage 90 --folder /storage/cctv --max-folder-size 500G --max-cycles 1000
+*/10 * * * * /usr/bin/python3 /usr/local/sbin/delete_oldest_files_cleanup.py --mount /storage --max-mount-usage 90 --max-mount-size 500G --folder /storage/cctv --max-folder-size 500G --max-cycles 10
 ```
 
 ---
@@ -234,14 +340,14 @@ Add:
 This sends normal output to `/dev/null`, but still lets errors go to cron mail:
 
 ```cron
-*/10 * * * * /usr/bin/python3 /home/cfna08h/Scripts/CleanUp/delete_oldest_files_cleanup.py --mount /storage --max-mount-usage 90 --folder /storage/cctv --max-folder-size 500G --max-cycles 1000 > /dev/null
+*/10 * * * * /usr/bin/python3 /usr/local/sbin/delete_oldest_files_cleanup.py --mount /storage --max-mount-usage 90 --max-mount-size 500G --folder /storage/cctv --max-folder-size 500G --max-cycles 10 > /dev/null
 ```
 
 ---
 
 ## Lock File
 
-The script uses a lock file:
+The script uses this lock file:
 
 ```text
 /tmp/CleanUpLockFile-CCTV.lock
@@ -273,7 +379,7 @@ cleanup-error-2026-05-19_08-30-00.log
 |---|---|
 | `0` | Finished normally |
 | `1` | Error occurred |
-| `2` | Invalid arguments/configuration |
+| `2` | Invalid arguments/configuration from `argparse` |
 
 ---
 
