@@ -1,23 +1,12 @@
 #!/usr/bin/env python3
 
 ###############################################################################
-# Author            : Louwrentius original idea
-# Rewritten by      : ChatGPT for Darkyere
-# Purpose           : Delete oldest files until mount usage and/or folder size
-#                     drops below configured limits.
+# Purpose:
+#   Delete oldest files first until one or more cleanup limits are below the
+#   configured thresholds.
 #
-# Examples:
-#
-# Mount mode:
-#   cleanup.py --mount /storage --max-mount-usage 90 --max-cycles 1000
-#
-# Folder size mode:
-#   cleanup.py --folder /storage/cctv --max-folder-size 500G --max-cycles 1000
-#
-# Both:
-#   cleanup.py --mount /storage --max-mount-usage 90 \
-#              --folder /storage/cctv --max-folder-size 500G \
-#              --max-cycles 1000
+# WARNING:
+#   This script permanently deletes files. Use at your own risk.
 ###############################################################################
 
 import argparse
@@ -32,35 +21,61 @@ from datetime import datetime
 from pathlib import Path
 
 
-VERSION = "1.05"
+VERSION = "1.06"
 LOCK_FILE = Path("/tmp/CleanUpLockFile-CCTV.lock")
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-TIMESTAMP = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-LOG_FILE = SCRIPT_DIR / f"cleanup-error-{TIMESTAMP}.log"
-
-tmp_fd, tmp_log_name = tempfile.mkstemp()
-os.close(tmp_fd)
-TMP_LOG = Path(tmp_log_name)
-
 LOCK_CREATED = False
+TMP_LOG = None
+LOG_FILE = None
 
 
 # =============================================================================
-# Logging helpers
+# Logging setup and helpers
 # =============================================================================
+
+def setup_logging():
+    """
+    Create a temporary log file and define the final error log path.
+    """
+    global TMP_LOG
+    global LOG_FILE
+
+    script_dir = Path(__file__).resolve().parent
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    LOG_FILE = script_dir / f"cleanup-error-{timestamp}.log"
+
+    tmp_fd, tmp_log_name = tempfile.mkstemp()
+    os.close(tmp_fd)
+    TMP_LOG = Path(tmp_log_name)
+
 
 def write_tmp(message: str = ""):
+    """
+    Write a line to the temporary log file.
+    """
+    if TMP_LOG is None:
+        return
+
     with TMP_LOG.open("a", encoding="utf-8") as logfile:
         logfile.write(message + "\n")
 
 
 def print_and_log(message: str = ""):
+    """
+    Print to stdout and also write to the temporary log.
+    """
     print(message)
     write_tmp(message)
 
 
 def remove_tmp_log():
+    """
+    Remove temporary log file if it still exists.
+    """
+    if TMP_LOG is None:
+        return
+
     try:
         if TMP_LOG.exists():
             TMP_LOG.unlink()
@@ -69,8 +84,19 @@ def remove_tmp_log():
 
 
 def save_error_log(exit_code: int):
+    """
+    Save the temporary log as a timestamped error log next to the script.
+    """
+    if TMP_LOG is None or LOG_FILE is None:
+        return
+
     write_tmp(f"Exit code: {exit_code}")
-    shutil.move(str(TMP_LOG), str(LOG_FILE))
+
+    try:
+        if TMP_LOG.exists():
+            shutil.move(str(TMP_LOG), str(LOG_FILE))
+    except OSError as error:
+        print(f"Failed to save error log: {error}", file=sys.stderr)
 
 
 # =============================================================================
@@ -78,6 +104,9 @@ def save_error_log(exit_code: int):
 # =============================================================================
 
 def clean_up():
+    """
+    Remove the lock file if this script instance created it.
+    """
     global LOCK_CREATED
 
     if LOCK_CREATED and LOCK_FILE.exists():
@@ -88,6 +117,9 @@ def clean_up():
 
 
 def signal_handler(signum, frame):
+    """
+    Handle Ctrl+C, SIGTERM, etc.
+    """
     print_and_log(f"Received signal {signum}, exiting.")
     save_error_log(1)
     clean_up()
@@ -95,8 +127,6 @@ def signal_handler(signum, frame):
 
 
 atexit.register(clean_up)
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
 
 
 # =============================================================================
@@ -104,6 +134,12 @@ signal.signal(signal.SIGTERM, signal_handler)
 # =============================================================================
 
 def create_lock_or_exit():
+    """
+    Create a lock file.
+
+    If the lock already exists, exit normally. This prevents multiple cleanup
+    jobs from running at the same time.
+    """
     global LOCK_CREATED
 
     if LOCK_FILE.exists():
@@ -115,19 +151,20 @@ def create_lock_or_exit():
         fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.close(fd)
         LOCK_CREATED = True
-    except OSError:
+    except OSError as error:
         print_and_log("Failed to create lock file, exiting.")
+        print_and_log(f"Error: {error}")
         save_error_log(1)
         sys.exit(1)
 
 
 # =============================================================================
-# Size parsing
+# Size parsing and formatting
 # =============================================================================
 
 def parse_size(size_text: str) -> int:
     """
-    Convert size strings to bytes.
+    Convert a human-readable size string to bytes.
 
     Supported examples:
         500G
@@ -138,6 +175,9 @@ def parse_size(size_text: str) -> int:
         100M
         100MB
         123456789
+
+    Units are binary, so:
+        1G = 1024 MiB
     """
     text = size_text.strip().upper()
 
@@ -154,11 +194,16 @@ def parse_size(size_text: str) -> int:
         "T": 1024 ** 4,
         "TB": 1024 ** 4,
         "TIB": 1024 ** 4,
+        "P": 1024 ** 5,
+        "PB": 1024 ** 5,
+        "PIB": 1024 ** 5,
     }
 
     for unit, multiplier in sorted(units.items(), key=lambda item: len(item[0]), reverse=True):
         if text.endswith(unit):
             number = text[:-len(unit)].strip()
+            if not number:
+                raise ValueError(f"Missing number before unit in size: {size_text}")
             return int(float(number) * multiplier)
 
     return int(float(text))
@@ -166,7 +211,7 @@ def parse_size(size_text: str) -> int:
 
 def format_size(num_bytes: int) -> str:
     """
-    Human-readable size output.
+    Format bytes as a human-readable binary size.
     """
     size = float(num_bytes)
 
@@ -182,9 +227,13 @@ def format_size(num_bytes: int) -> str:
 # Disk and folder usage
 # =============================================================================
 
-def get_mount_usage_percent(mount: Path):
+def get_mount_usage(mount: Path):
     """
-    Return current disk usage percentage for the filesystem containing mount.
+    Return filesystem usage information for the filesystem containing mount.
+
+    Returns:
+        tuple[int, int, int, int]
+        total bytes, used bytes, free bytes, used percentage rounded up
     """
     try:
         usage = shutil.disk_usage(mount)
@@ -194,7 +243,8 @@ def get_mount_usage_percent(mount: Path):
     if usage.total <= 0:
         return None
 
-    return math.ceil((usage.used / usage.total) * 100)
+    used_percent = math.ceil((usage.used / usage.total) * 100)
+    return usage.total, usage.used, usage.free, used_percent
 
 
 def get_folder_size(folder: Path) -> int:
@@ -280,13 +330,16 @@ def delete_oldest_file(folder: Path):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Delete oldest files until mount usage and/or folder size is below limits."
+        description=(
+            "Delete oldest files until mount usage, mount used size, and/or "
+            "folder size is below configured limits."
+        )
     )
 
     parser.add_argument(
         "--mount",
         type=Path,
-        help="Mount point to check for percentage usage, for example /storage",
+        help="Mount point/filesystem to check, for example /storage",
     )
 
     parser.add_argument(
@@ -296,9 +349,18 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--max-mount-size",
+        type=str,
+        help="Maximum allowed used size on the mount/filesystem, for example 500G",
+    )
+
+    parser.add_argument(
         "--folder",
         type=Path,
-        help="Folder to scan for oldest files and optionally check size",
+        help=(
+            "Folder to scan for oldest files. If --max-folder-size is also used, "
+            "this folder size is checked too."
+        ),
     )
 
     parser.add_argument(
@@ -325,21 +387,32 @@ def parse_args():
     if args.max_mount_usage is not None and args.mount is None:
         parser.error("--max-mount-usage requires --mount")
 
-    if args.mount is not None and args.max_mount_usage is None:
-        parser.error("--mount requires --max-mount-usage")
+    if args.max_mount_size is not None and args.mount is None:
+        parser.error("--max-mount-size requires --mount")
 
     if args.max_folder_size is not None and args.folder is None:
         parser.error("--max-folder-size requires --folder")
 
-    if args.folder is not None and not args.folder.is_dir():
-        parser.error(f"--folder is not a directory: {args.folder}")
-
     if args.mount is not None and not args.mount.is_dir():
         parser.error(f"--mount is not a directory: {args.mount}")
+
+    if args.folder is not None and not args.folder.is_dir():
+        parser.error(f"--folder is not a directory: {args.folder}")
 
     if args.max_mount_usage is not None:
         if args.max_mount_usage < 0 or args.max_mount_usage > 100:
             parser.error("--max-mount-usage must be between 0 and 100")
+
+    if args.max_mount_size is not None:
+        try:
+            args.max_mount_size_bytes = parse_size(args.max_mount_size)
+        except ValueError:
+            parser.error(f"Invalid --max-mount-size value: {args.max_mount_size}")
+
+        if args.max_mount_size_bytes < 1:
+            parser.error("--max-mount-size must be larger than 0")
+    else:
+        args.max_mount_size_bytes = None
 
     if args.max_folder_size is not None:
         try:
@@ -352,12 +425,25 @@ def parse_args():
     else:
         args.max_folder_size_bytes = None
 
-    # If only mount mode is used, delete from the mount itself.
-    # If folder is supplied, delete only from that folder.
-    if args.folder is None:
-        args.cleanup_folder = args.mount
-    else:
+    has_mount_trigger = (
+        args.max_mount_usage is not None
+        or args.max_mount_size_bytes is not None
+    )
+    has_folder_trigger = args.max_folder_size_bytes is not None
+
+    if not has_mount_trigger and not has_folder_trigger:
+        parser.error(
+            "No cleanup limit configured. Use at least one of "
+            "--max-mount-usage, --max-mount-size, or --max-folder-size"
+        )
+
+    # Safety behavior:
+    #   If --folder is supplied, files are deleted only from that folder.
+    #   If --folder is not supplied, files are deleted from --mount.
+    if args.folder is not None:
         args.cleanup_folder = args.folder
+    else:
+        args.cleanup_folder = args.mount
 
     return args
 
@@ -370,27 +456,37 @@ def check_cleanup_needed(args):
     """
     Return True if cleanup is needed.
 
-    Cleanup is needed if either:
-      - mount usage is above max mount usage
-      - folder size is above max folder size
+    Cleanup is needed if any configured limit is exceeded:
+      - mount usage percentage is above --max-mount-usage
+      - mount used size is above --max-mount-size
+      - folder size is above --max-folder-size
     """
     cleanup_needed = False
 
-    mount_usage = None
-    folder_size = None
-
     if args.mount is not None:
-        mount_usage = get_mount_usage_percent(args.mount)
+        mount_usage = get_mount_usage(args.mount)
 
         if mount_usage is None:
             print_and_log(f"Could not determine disk usage. Check mount path: {args.mount}")
             save_error_log(1)
             sys.exit(1)
 
-        print(f"Mount usage: {mount_usage}% limit: {args.max_mount_usage}%")
+        total_bytes, used_bytes, free_bytes, used_percent = mount_usage
 
-        if mount_usage > args.max_mount_usage:
-            cleanup_needed = True
+        if args.max_mount_usage is not None:
+            print(f"Mount usage: {used_percent}% limit: {args.max_mount_usage}%")
+
+            if used_percent > args.max_mount_usage:
+                cleanup_needed = True
+
+        if args.max_mount_size_bytes is not None:
+            print(
+                f"Mount used size: {format_size(used_bytes)} "
+                f"limit: {format_size(args.max_mount_size_bytes)}"
+            )
+
+            if used_bytes > args.max_mount_size_bytes:
+                cleanup_needed = True
 
     if args.max_folder_size_bytes is not None:
         folder_size = get_folder_size(args.folder)
@@ -403,7 +499,7 @@ def check_cleanup_needed(args):
         if folder_size > args.max_folder_size_bytes:
             cleanup_needed = True
 
-    return cleanup_needed, mount_usage, folder_size
+    return cleanup_needed
 
 
 # =============================================================================
@@ -411,8 +507,13 @@ def check_cleanup_needed(args):
 # =============================================================================
 
 def main():
-    create_lock_or_exit()
     args = parse_args()
+
+    setup_logging()
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    create_lock_or_exit()
 
     print()
     print(f"DELETE OLD FILES {VERSION}")
@@ -426,14 +527,22 @@ def main():
 
     if args.mount is not None:
         print(f"Mount check        : {args.mount}")
-        print(f"Max mount usage    : {args.max_mount_usage}%")
         write_tmp(f"Mount check        : {args.mount}")
+
+    if args.max_mount_usage is not None:
+        print(f"Max mount usage    : {args.max_mount_usage}%")
         write_tmp(f"Max mount usage    : {args.max_mount_usage}%")
 
+    if args.max_mount_size_bytes is not None:
+        print(f"Max mount size     : {format_size(args.max_mount_size_bytes)}")
+        write_tmp(f"Max mount size     : {format_size(args.max_mount_size_bytes)}")
+
+    if args.folder is not None:
+        print(f"Folder             : {args.folder}")
+        write_tmp(f"Folder             : {args.folder}")
+
     if args.max_folder_size_bytes is not None:
-        print(f"Folder size check  : {args.folder}")
         print(f"Max folder size    : {format_size(args.max_folder_size_bytes)}")
-        write_tmp(f"Folder size check  : {args.folder}")
         write_tmp(f"Max folder size    : {format_size(args.max_folder_size_bytes)}")
 
     print()
@@ -442,7 +551,7 @@ def main():
     cycles = 0
 
     while True:
-        cleanup_needed, mount_usage, folder_size = check_cleanup_needed(args)
+        cleanup_needed = check_cleanup_needed(args)
 
         if not cleanup_needed:
             print("Cleanup limits are OK. Done.")
@@ -450,8 +559,13 @@ def main():
             sys.exit(0)
 
         if cycles >= args.max_cycles:
+            print(
+                f"Reached max cycles ({args.max_cycles}) "
+                "but one or more cleanup limits are still exceeded."
+            )
             write_tmp(
-                f"Reached max cycles ({args.max_cycles}) but cleanup limits are still exceeded."
+                f"Reached max cycles ({args.max_cycles}) "
+                "but one or more cleanup limits are still exceeded."
             )
             remove_tmp_log()
             sys.exit(0)
