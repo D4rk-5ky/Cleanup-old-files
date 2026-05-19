@@ -144,7 +144,7 @@ Delete oldest files under `/storage` until `/storage` is at or below `90%` usage
 /usr/bin/python3 /home/cfna08h/Scripts/CleanUp/delete_oldest_files_cleanup.py \
   --mount /storage \
   --max-mount-usage 90 \
-  --max-cycles 1000
+  --max-cycles 10
 ```
 
 ---
@@ -157,7 +157,7 @@ Delete oldest files under `/storage/cctv` until that folder is at or below `500G
 /usr/bin/python3 /home/cfna08h/Scripts/CleanUp/delete_oldest_files_cleanup.py \
   --folder /storage/cctv \
   --max-folder-size 500G \
-  --max-cycles 1000
+  --max-cycles 10
 ```
 
 ---
@@ -175,7 +175,7 @@ Delete oldest files under `/storage/cctv` if either:
   --max-mount-usage 90 \
   --folder /storage/cctv \
   --max-folder-size 500G \
-  --max-cycles 1000
+  --max-cycles 10
 ```
 
 In this mode, files are deleted from:
